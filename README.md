@@ -8,15 +8,18 @@
 
 Никогда не храните токен в открытом виде в репозитории (git). Бот настроен на чтение чувствительных данных из **переменных окружения (Environment Variables)**:
 
-- `VK_ACCESS_TOKEN` — ваш токен сообщества.
-- `VK_SECRET_KEY` — секретный ключ из настроек Callback API ВКонтакте.
-- `VK_CONFIRMATION_CODE` — строка подтверждения сервера из настроек Callback API ВКонтакте.
+- `VK_ACCESS_TOKEN` — токен сообщества ВКонтакте.
+- `VK_CONFIRMATION_CODE` — код подтверждения адреса (`ce6d834c`).
+
+### Endpoint Callback API:
+- URL: `https://mint-manager-vk.pages.dev/vk/api/ver1fLsv7Dfsdlmak`
+- Код подтверждения (confirmation): `ce6d834c`
+- Группа: `232664735`
+- Секретный ключ: отсутствует (выключен)
 
 ### Запуск локально в PowerShell:
 ```powershell
-$env:VK_ACCESS_TOKEN="vk1.a.ChdOUA-..."
-$env:VK_SECRET_KEY="my_secret_key"
-$env:VK_CONFIRMATION_CODE="a1b2c3d4"
+$env:VK_CONFIRMATION_CODE="ce6d834c"
 dotnet run
 ```
 
