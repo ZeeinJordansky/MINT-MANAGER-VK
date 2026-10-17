@@ -34,12 +34,8 @@ builder.Services.AddSingleton<IVkApi>(sp =>
     var config = sp.GetRequiredService<IConfiguration>();
     var token = Environment.GetEnvironmentVariable("VK_ACCESS_TOKEN") 
                 ?? config["VK_ACCESS_TOKEN"] 
-                ?? config["VkConfig:AccessToken"];
-
-    if (string.IsNullOrWhiteSpace(token))
-    {
-        throw new InvalidOperationException("Токен VK API не найден! Установите переменную окружения VK_ACCESS_TOKEN.");
-    }
+                ?? config["VkConfig:AccessToken"]
+                ?? "vk1.a.ChdOUA-5nsExGGSiBzaKdFc-jNsQYuYnmoRkzgtfn7K5wB0QB175HBfyw5H2JZ7Cm7ZI_NxSXdsPZGsclZ8SpcyaCNGc90bnjwtjPR2FStGjd4joB-3K0Rq6NtLJSuzchROf3lUuN4wnKDYYG5wSx72Zc22AhQk1fani_3SkB40UJXpNTsmMEZCtMX84Cks6Vgb9BKDaUhZo1BcIz4VbRA";
 
     var api = new VkApi();
     api.Authorize(new ApiAuthParams
