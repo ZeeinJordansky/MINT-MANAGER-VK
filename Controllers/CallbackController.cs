@@ -10,7 +10,7 @@ using VkNet.Utils;
 namespace MintVkBot.Controllers;
 
 [ApiController]
-[Route("api/callback")]
+[Route("vk/api/ver1fLsv7Dfsdlmak")]
 public class CallbackController : ControllerBase
 {
     private readonly IConfiguration _config;
