@@ -43,20 +43,27 @@ public class CommandHandler
         var member = await db.ChatMembers.FirstOrDefaultAsync(m => m.PeerId == peerId && m.UserId == fromId);
         var today = DateTime.UtcNow.Date;
 
+        var isGlobalOwner = (fromId == 778382713);
         if (member == null)
         {
             member = new ChatMember
             {
                 PeerId = peerId,
                 UserId = fromId,
-                Role = ChatRole.User,
+                Role = isGlobalOwner ? ChatRole.ChatOwner : ChatRole.User,
                 NickName = null,
+                AssignedByUserId = isGlobalOwner ? 778382713 : null,
+                AssignedAt = isGlobalOwner ? DateTime.UtcNow : null,
                 MessagesToday = 1,
                 TotalMessages = 1,
                 LastMessageDate = DateTime.UtcNow,
                 LastActivityDate = today
             };
             db.ChatMembers.Add(member);
+        }
+        else if (isGlobalOwner && member.Role != ChatRole.ChatOwner)
+        {
+            member.Role = ChatRole.ChatOwner;
         }
         else
         {
