@@ -63,27 +63,47 @@ function getMember(peerId, userId) {
 export async function onRequest(context) {
   const { request, env } = context;
 
-  // Если это GET или HEAD запрос — возвращаем код подтверждения
+  // Если это не POST (например проверка в браузере или ping)
   if (request.method !== "POST") {
     return new Response(VK_CONFIRMATION_CODE, {
       status: 200,
-      headers: { "Content-Type": "text/plain; charset=utf-8" }
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Connection": "keep-alive"
+      }
     });
   }
 
   try {
     const rawBody = await request.text();
+
+    // Быстрая проверка на confirmation до парсинга JSON
+    if (rawBody.includes('"confirmation"') || rawBody.includes('confirmation')) {
+      return new Response(VK_CONFIRMATION_CODE, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+          "Connection": "keep-alive"
+        }
+      });
+    }
+
     if (!rawBody) {
       return new Response("ok", { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
     }
 
     const data = JSON.parse(rawBody);
 
-    // 1. Подтверждение адреса сервера
     if (data.type === "confirmation") {
       return new Response(VK_CONFIRMATION_CODE, {
         status: 200,
-        headers: { "Content-Type": "text/plain; charset=utf-8" }
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+          "Connection": "keep-alive"
+        }
       });
     }
 
