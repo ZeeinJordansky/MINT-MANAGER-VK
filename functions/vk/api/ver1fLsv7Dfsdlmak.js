@@ -121,13 +121,16 @@ export async function onRequest(context) {
     if (data.type === "message_new") {
       const message = data.object?.message || data.object;
       if (message) {
-        try {
-          await handleIncomingMessage(message, env);
-        } catch (e) {
-          console.error("handleIncomingMessage error:", e);
+        if (context.waitUntil) {
+          context.waitUntil(handleIncomingMessage(message, env));
+        } else {
+          handleIncomingMessage(message, env).catch(e => console.error("Message handler error:", e));
         }
       }
-      return new Response("ok", { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+      return new Response("ok", {
+        status: 200,
+        headers: { "Content-Type": "text/plain; charset=utf-8" }
+      });
     }
 
     return new Response("ok", { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
