@@ -63,7 +63,7 @@ function getMember(peerId, userId) {
 export async function onRequest(context) {
   const { request, env } = context;
 
-  // Если это не POST (например проверка в браузере или ping)
+  // Если это не POST (GET в браузере или ping) — мгновенно отдаем код
   if (request.method !== "POST") {
     return new Response(VK_CONFIRMATION_CODE, {
       status: 200,
@@ -78,7 +78,7 @@ export async function onRequest(context) {
   try {
     const rawBody = await request.text();
 
-    // Быстрая проверка на confirmation до парсинга JSON
+    // Быстрый ответ на confirmation до парсинга JSON
     if (rawBody.includes('"confirmation"') || rawBody.includes('confirmation')) {
       return new Response(VK_CONFIRMATION_CODE, {
         status: 200,
@@ -107,7 +107,7 @@ export async function onRequest(context) {
       });
     }
 
-    // 2. Нажатие на Callback-кнопку (message_event)
+    // Callback-кнопки (message_event)
     if (data.type === "message_event") {
       if (context.waitUntil) {
         context.waitUntil(handleMessageEvent(data.object, env));
@@ -117,11 +117,10 @@ export async function onRequest(context) {
       return new Response("ok", { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
     }
 
-    // 3. Входящее сообщение в беседе (message_new)
+    // Новое сообщение в беседе (message_new)
     if (data.type === "message_new") {
       const message = data.object?.message || data.object;
       if (message) {
-        // Обязательно ждем выполнения handleIncomingMessage, чтобы воркер не завершился раньше времени
         try {
           await handleIncomingMessage(message, env);
         } catch (e) {
@@ -133,7 +132,6 @@ export async function onRequest(context) {
 
     return new Response("ok", { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
   } catch (err) {
-    console.error("Worker catch error:", err);
     return new Response("ok", { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
   }
 }
@@ -154,7 +152,7 @@ async function callVkApi(method, params = {}) {
   return await res.json();
 }
 
-// Надёжная отправка с Reply-ответом (репликой)
+// Отправка с Reply-ответом
 async function sendReply(peerId, messageText, messageObj, keyboard = null) {
   try {
     const baseParams = {
@@ -170,7 +168,6 @@ async function sendReply(peerId, messageText, messageObj, keyboard = null) {
     const cmId = messageObj.conversation_message_id;
     const msgId = messageObj.id;
 
-    // Попытка 1: через forward JSON с conversation_message_ids (самый правильный для бесед)
     if (cmId && cmId > 0) {
       const p1 = {
         ...baseParams,
@@ -184,7 +181,6 @@ async function sendReply(peerId, messageText, messageObj, keyboard = null) {
       if (!res1.error) return res1;
     }
 
-    // Попытка 2: через reply_to (если есть msgId)
     if (msgId && msgId > 0) {
       const p2 = {
         ...baseParams,
@@ -194,14 +190,13 @@ async function sendReply(peerId, messageText, messageObj, keyboard = null) {
       if (!res2.error) return res2;
     }
 
-    // Попытка 3: обычная отправка (чтобы никогда не было игнора)
     return await callVkApi("messages.send", baseParams);
   } catch (e) {
-    console.error("sendReply fatal error:", e);
+    console.error("sendReply error:", e);
   }
 }
 
-// Редактирование существующего сообщения бота (для callback-кнопок)
+// Редактирование сообщения бота
 async function editBotMessage(peerId, conversationMessageId, text, keyboard = null) {
   try {
     const params = {
@@ -252,7 +247,6 @@ async function getRegistrationDate(userId) {
   }
 }
 
-// Извлечение целевого пользователя (reply, fwd, упоминание)
 function getTargetUserId(message) {
   if (message.reply_message && message.reply_message.from_id > 0) {
     return message.reply_message.from_id;
@@ -268,7 +262,6 @@ function getTargetUserId(message) {
   return null;
 }
 
-// Парсинг времени (10s, 30m, 2h, 1d)
 function parseDuration(str) {
   if (!str) return null;
   const match = str.toLowerCase().match(/^(\d+)([smhd])$/);
@@ -300,9 +293,7 @@ function inlineKeyboard(rows) {
   };
 }
 
-// ==========================================
-// ОСНОВНОЙ ОБРАБОТЧИК СООБЩЕНИЙ
-// ==========================================
+// Обработка команд
 async function handleIncomingMessage(message, env) {
   const startTime = Date.now();
   const peerId = message.peer_id;
@@ -310,7 +301,6 @@ async function handleIncomingMessage(message, env) {
 
   if (!peerId || fromId <= 0) return;
 
-  // Сохраняем в историю для /clear
   if (!memoryStore.messages.has(peerId)) {
     memoryStore.messages.set(peerId, []);
   }
@@ -323,7 +313,6 @@ async function handleIncomingMessage(message, env) {
   });
   if (chatMsgs.length > 500) chatMsgs.shift();
 
-  // Получаем участника
   const member = getMember(peerId, fromId);
   member.totalCount++;
   member.todayCount++;
@@ -1061,7 +1050,6 @@ ${leadersStr}
   }
 }
 
-// Рендер страницы участников с никами
 async function renderNlistPage(peerId, page, message = null, editCmId = null) {
   const pageSize = 10;
   const usersWithNicks = [];
@@ -1109,9 +1097,6 @@ ${itemsStr}`;
   }
 }
 
-// ==========================================
-// ОБРАБОТЧИК CALLBACK-КНОПОК (MESSAGE_EVENT)
-// ==========================================
 async function handleMessageEvent(eventObj, env) {
   const peerId = eventObj.peer_id;
   const userId = eventObj.user_id;
