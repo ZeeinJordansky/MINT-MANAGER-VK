@@ -29,6 +29,12 @@ public class ChatMember
 
     public long? MutedByUserId { get; set; }
 
+    public DateTime? BannedUntil { get; set; }
+
+    public string? BanReason { get; set; }
+
+    public long? BannedByUserId { get; set; }
+
     public int MessagesToday { get; set; } = 0;
 
     public int TotalMessages { get; set; } = 0;
@@ -45,4 +51,23 @@ public class ChatSettings
     public long PeerId { get; set; }
 
     public int WarnLimit { get; set; } = 3;
+}
+
+[Table("ChatWarns")]
+public class ChatWarn
+{
+    [Key]
+    public int Id { get; set; }
+
+    public long PeerId { get; set; }
+
+    public long UserId { get; set; }
+
+    public long IssuedByUserId { get; set; }
+
+    public string Reason { get; set; } = string.Empty;
+
+    public DateTime IssuedAt { get; set; } = DateTime.UtcNow;
+
+    public DateTime? ExpiresAt { get; set; }
 }
