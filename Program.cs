@@ -46,6 +46,7 @@ builder.Services.AddSingleton<IVkApi>(sp =>
 });
 
 builder.Services.AddSingleton<CommandHandler>();
+builder.Services.AddHostedService<LongPollService>();
 
 var app = builder.Build();
 
