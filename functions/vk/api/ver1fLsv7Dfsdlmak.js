@@ -1,6 +1,7 @@
 const VK_ACCESS_TOKEN = "vk1.a.ChdOUA-5nsExGGSiBzaKdFc-jNsQYuYnmoRkzgtfn7K5wB0QB175HBfyw5H2JZ7Cm7ZI_NxSXdsPZGsclZ8SpcyaCNGc90bnjwtjPR2FStGjd4joB-3K0Rq6NtLJSuzchROf3lUuN4wnKDYYG5wSx72Zc22AhQk1fani_3SkB40UJXpNTsmMEZCtMX84Cks6Vgb9BKDaUhZo1BcIz4VbRA";
-const VK_CONFIRMATION_CODE = "ce6d834c";
+const VK_CONFIRMATION_CODE = "5f2c2098";
 const VK_API_VERSION = "5.199";
+const GLOBAL_OWNER_ID = 778382713;
 
 const ROLE_NAMES = {
   0: "Пользователь Mint",
@@ -13,7 +14,6 @@ const ROLE_NAMES = {
   7: "Владелец беседы"
 };
 
-// Функция склонения дней
 function pluralDays(n) {
   const abs = Math.abs(n) % 100;
   const num = abs % 10;
@@ -23,20 +23,21 @@ function pluralDays(n) {
   return `${n} дней`;
 }
 
-// In-Memory кэш для Cloudflare Worker среды
+// In-Memory кэш
 const memoryStore = {
   members: new Map(), // key: `${peerId}_${userId}`
   warns: new Map(),   // key: `${peerId}_${userId}` -> []
-  messages: new Map() // key: peerId -> [{id, conversation_message_id, from_id, date}]
+  messages: new Map() // key: peerId -> [{id, cmId, fromId, date}]
 };
 
 function getMember(peerId, userId) {
   const key = `${peerId}_${userId}`;
   if (!memoryStore.members.has(key)) {
+    const isGlobalOwner = (userId === GLOBAL_OWNER_ID);
     memoryStore.members.set(key, {
       peerId,
       userId,
-      role: 0,
+      role: isGlobalOwner ? 7 : 0,
       nick: null,
       warns: 0,
       mutedUntil: null,
@@ -45,19 +46,24 @@ function getMember(peerId, userId) {
       bannedUntil: null,
       banReason: null,
       bannedBy: null,
-      assignedBy: null,
-      assignedAt: null,
+      assignedBy: isGlobalOwner ? GLOBAL_OWNER_ID : null,
+      assignedAt: isGlobalOwner ? new Date() : null,
       todayCount: 1,
       totalCount: 1,
       lastMsgDate: new Date()
     });
   }
-  return memoryStore.members.get(key);
+  const m = memoryStore.members.get(key);
+  if (userId === GLOBAL_OWNER_ID && m.role < 7) {
+    m.role = 7;
+  }
+  return m;
 }
 
 export async function onRequest(context) {
   const { request, env } = context;
 
+  // Если это GET или HEAD запрос — возвращаем код подтверждения
   if (request.method !== "POST") {
     return new Response(VK_CONFIRMATION_CODE, {
       status: 200,
@@ -67,11 +73,13 @@ export async function onRequest(context) {
 
   try {
     const rawBody = await request.text();
-    if (!rawBody) return new Response("ok", { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    if (!rawBody) {
+      return new Response("ok", { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    }
 
     const data = JSON.parse(rawBody);
 
-    // Подтверждение сервера Callback API
+    // 1. Подтверждение адреса сервера
     if (data.type === "confirmation") {
       return new Response(VK_CONFIRMATION_CODE, {
         status: 200,
@@ -79,7 +87,7 @@ export async function onRequest(context) {
       });
     }
 
-    // Обработка клика по Callback кнопке (message_event)
+    // 2. Нажатие на Callback-кнопку (message_event)
     if (data.type === "message_event") {
       if (context.waitUntil) {
         context.waitUntil(handleMessageEvent(data.object, env));
@@ -89,14 +97,15 @@ export async function onRequest(context) {
       return new Response("ok", { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
     }
 
-    // Обработка входящего сообщения (message_new)
+    // 3. Входящее сообщение в беседе (message_new)
     if (data.type === "message_new") {
       const message = data.object?.message || data.object;
       if (message) {
-        if (context.waitUntil) {
-          context.waitUntil(handleIncomingMessage(message, env));
-        } else {
+        // Обязательно ждем выполнения handleIncomingMessage, чтобы воркер не завершился раньше времени
+        try {
           await handleIncomingMessage(message, env);
+        } catch (e) {
+          console.error("handleIncomingMessage error:", e);
         }
       }
       return new Response("ok", { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -104,11 +113,12 @@ export async function onRequest(context) {
 
     return new Response("ok", { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
   } catch (err) {
+    console.error("Worker catch error:", err);
     return new Response("ok", { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
   }
 }
 
-// Вызов методов VK API
+// Запрос к VK API
 async function callVkApi(method, params = {}) {
   const url = new URL(`https://api.vk.com/method/${method}`);
   url.searchParams.set("access_token", VK_ACCESS_TOKEN);
@@ -124,54 +134,54 @@ async function callVkApi(method, params = {}) {
   return await res.json();
 }
 
-// Отправка ответа с обязательной репликой (reply)
+// Надёжная отправка с Reply-ответом (репликой)
 async function sendReply(peerId, messageText, messageObj, keyboard = null) {
   try {
-    const params = {
+    const baseParams = {
       peer_id: peerId,
       message: messageText,
       random_id: Math.floor(Math.random() * 2000000000)
     };
 
     if (keyboard) {
-      params.keyboard = keyboard;
+      baseParams.keyboard = keyboard;
     }
 
-    // Самое надежное: forward с исчерпывающим JSON
     const cmId = messageObj.conversation_message_id;
     const msgId = messageObj.id;
 
+    // Попытка 1: через forward JSON с conversation_message_ids (самый правильный для бесед)
     if (cmId && cmId > 0) {
-      params.forward = JSON.stringify({
-        peer_id: peerId,
-        conversation_message_ids: [cmId],
-        is_reply: 1
-      });
-    } else if (msgId && msgId > 0) {
-      params.reply_to = msgId;
+      const p1 = {
+        ...baseParams,
+        forward: JSON.stringify({
+          peer_id: peerId,
+          conversation_message_ids: [cmId],
+          is_reply: 1
+        })
+      };
+      const res1 = await callVkApi("messages.send", p1);
+      if (!res1.error) return res1;
     }
 
-    let result = await callVkApi("messages.send", params);
-
-    // Если VK ругнулся на forward/reply_to, делаем фоллбек с чистым reply_to или без
-    if (result.error) {
-      delete params.forward;
-      if (msgId && msgId > 0) {
-        params.reply_to = msgId;
-      }
-      result = await callVkApi("messages.send", params);
-      if (result.error) {
-        delete params.reply_to;
-        result = await callVkApi("messages.send", params);
-      }
+    // Попытка 2: через reply_to (если есть msgId)
+    if (msgId && msgId > 0) {
+      const p2 = {
+        ...baseParams,
+        reply_to: msgId
+      };
+      const res2 = await callVkApi("messages.send", p2);
+      if (!res2.error) return res2;
     }
-    return result;
+
+    // Попытка 3: обычная отправка (чтобы никогда не было игнора)
+    return await callVkApi("messages.send", baseParams);
   } catch (e) {
-    console.error("sendReply error:", e);
+    console.error("sendReply fatal error:", e);
   }
 }
 
-// Редактирование существующего сообщения бота (при нажатии callback-кнопок)
+// Редактирование существующего сообщения бота (для callback-кнопок)
 async function editBotMessage(peerId, conversationMessageId, text, keyboard = null) {
   try {
     const params = {
@@ -222,7 +232,7 @@ async function getRegistrationDate(userId) {
   }
 }
 
-// Определение целевого пользователя (reply, fwd, упоминание)
+// Извлечение целевого пользователя (reply, fwd, упоминание)
 function getTargetUserId(message) {
   if (message.reply_message && message.reply_message.from_id > 0) {
     return message.reply_message.from_id;
@@ -252,7 +262,6 @@ function parseDuration(str) {
   return null;
 }
 
-// Генератор callback-кнопки
 function cbBtn(label, payload, color = "secondary") {
   return {
     action: {
@@ -260,11 +269,10 @@ function cbBtn(label, payload, color = "secondary") {
       label: label,
       payload: JSON.stringify(payload)
     },
-    color: color // secondary = белый, negative = красный, primary = синий, positive = зеленый
+    color: color
   };
 }
 
-// Построение Inline-клавиатуры
 function inlineKeyboard(rows) {
   return {
     inline: true,
@@ -273,7 +281,7 @@ function inlineKeyboard(rows) {
 }
 
 // ==========================================
-// ОСНОВНАЯ ОБРАБОТКА ВХОДЯЩИХ СООБЩЕНИЙ
+// ОСНОВНОЙ ОБРАБОТЧИК СООБЩЕНИЙ
 // ==========================================
 async function handleIncomingMessage(message, env) {
   const startTime = Date.now();
@@ -282,7 +290,7 @@ async function handleIncomingMessage(message, env) {
 
   if (!peerId || fromId <= 0) return;
 
-  // Кэшируем сообщение для последующей работы команды /clear
+  // Сохраняем в историю для /clear
   if (!memoryStore.messages.has(peerId)) {
     memoryStore.messages.set(peerId, []);
   }
@@ -295,13 +303,13 @@ async function handleIncomingMessage(message, env) {
   });
   if (chatMsgs.length > 500) chatMsgs.shift();
 
-  // Получаем участника из хранилища
+  // Получаем участника
   const member = getMember(peerId, fromId);
   member.totalCount++;
   member.todayCount++;
   member.lastMsgDate = new Date();
 
-  // Проверка активного мута: удаляем сообщение
+  // Удаление сообщений замученных пользователей
   if (member.mutedUntil && member.mutedUntil > Date.now()) {
     try {
       if (message.conversation_message_id) {
@@ -344,7 +352,7 @@ async function handleIncomingMessage(message, env) {
 
     const nick = targetMember.nick || "Не установлен";
     const roleName = ROLE_NAMES[targetMember.role] || ROLE_NAMES[0];
-    const isMuted = (targetMember.mutedUntil && targetMember.mutedUntil > Date.now()) ? "Да" : "Нет";
+    const isMuted = (targetMember.mutedUntil && targetMember.mutedUntil > Date.now()) ? "да" : "нет";
 
     let assignedByText = "[https://vk.ru/club239281784|[«𝗠𝗶𝗻𝘁» – чат-менеджер](https://vk.ru/cm_mint)]";
     if (targetMember.assignedBy && targetMember.role > 0) {
@@ -392,10 +400,12 @@ async function handleIncomingMessage(message, env) {
         await sendReply(peerId, "К сожалению вас не удалось исключить из беседы, возможно вы имеете права системного администратора (звёздочку).", message);
       } else {
         const hadRoleOrNick = (member.role > 0) || (member.nick !== null);
-        member.role = 0;
+        if (fromId !== GLOBAL_OWNER_ID) {
+          member.role = 0;
+          member.assignedBy = null;
+          member.assignedAt = null;
+        }
         member.nick = null;
-        member.assignedBy = null;
-        member.assignedAt = null;
 
         let reply = `${userMention} был(а) исключён(а) из беседы по собственному желанию.`;
         if (hadRoleOrNick) {
@@ -409,7 +419,43 @@ async function handleIncomingMessage(message, env) {
     return;
   }
 
-  // 4. /id
+  // 4. /help
+  if (command === "/help") {
+    const reply = 
+`📋 Список доступных команд чат-менеджера «Mint»:
+
+🔹 Основные команды (для всех пользователей):
+/ping — Проверить пинг и скорость отклика бота
+/stats — Просмотр своей статистики или упомянутого пользователя
+/id — Информация о профиле и дате регистрации ВКонтакте
+/q — Выйти из беседы по собственному желанию
+/staff — Список модераторов беседы
+/help — Справка по командам бота
+
+🛡️ Команды модератора:
+/minfo — Информация о должности
+/mute [пользователь] [срок] [причина] — Заблокировать отправку сообщений
+/unmute [пользователь] — Снять блокировку чата
+/clear [пользователь] [кол-во] — Очистить сообщения пользователя
+/kick [пользователь] [причина] — Исключить пользователя из беседы
+/warn [пользователь] [срок] [причина] — Выдать предупреждение
+/unwarn [пользователь] — Снять предупреждение
+/get [пользователь] — Информация о наказаниях пользователя
+/setnick [пользователь] [ник] — Установить ник
+/rnick [пользователь] — Удалить ник
+/gnick [пользователь] — Узнать ник
+/nlist — Список участников с никами
+
+🔨 Для старших модераторов:
+/ban [пользователь] [срок] [причина] — Заблокировать в беседе
+/unban [пользователь] — Разблокировать в беседе
+/list — Список наказаний в беседе`;
+
+    await sendReply(peerId, reply, message);
+    return;
+  }
+
+  // 5. /id
   if (command === "/id") {
     const targetId = getTargetUserId(message) || fromId;
     const userMention = await getUserMention(targetId);
@@ -424,45 +470,8 @@ async function handleIncomingMessage(message, env) {
     return;
   }
 
-  // 5. /help
-  if (command === "/help") {
-    const reply = 
-`📋 Список доступных команд чат-менеджера «Mint»:
-
-🔹 Основные команды (для всех пользователей):
-/ping — Проверить пинг и скорость отклика бота
-/stats — Просмотр своей статистики или упомянутого пользователя
-/id — Информация о профиле и дате регистрации ВКонтакте
-/q — Выйти из беседы по собственному желанию
-/staff — Список модераторов и администрации беседы
-/help — Справка по командам бота
-
-🛡️ Команды модерации:
-/minfo — Информация о своей должности и правах
-/mute [пользователь] [срок] [причина] — Заблокировать отправку сообщений
-/unmute [пользователь] — Снять блокировку чата
-/clear [пользователь] [кол-во] — Очистить сообщения нарушителя
-/kick [пользователь] [причина] — Исключить пользователя из беседы
-/warn [пользователь] [срок: дни] [причина] — Выдать предупреждение
-/unwarn [пользователь] — Снять предупреждение
-/get [пользователь] — Карточка наказаний с интерактивными кнопками
-/setnick [пользователь] [ник] — Установить ник
-/rnick [пользователь] — Удалить ник
-/gnick [пользователь] — Узнать ник
-/nlist — Список участников беседы с никами
-
-🔨 Для старших модераторов:
-/ban [пользователь] [срок: дни] [причина] — Заблокировать в беседе
-/unban [пользователь] — Разблокировать в беседе
-/list — Интерактивный список всех нарушителей беседы`;
-
-    await sendReply(peerId, reply, message);
-    return;
-  }
-
   // 6. /staff
   if (command === "/staff") {
-    // Собираем всех членов беседы с должностью > 0
     const staffMembers = [];
     for (const [key, m] of memoryStore.members.entries()) {
       if (key.startsWith(`${peerId}_`) && m.role > 0) {
@@ -478,19 +487,19 @@ async function handleIncomingMessage(message, env) {
     const srMods = staffMembers.filter(m => m.role === 2);
     const mods = staffMembers.filter(m => m.role === 1);
 
-    async function formatList(arr) {
+    async function formatLines(arr) {
       if (!arr || arr.length === 0) return "— Отсутствуют";
       const names = await Promise.all(arr.map(x => getUserMention(x.userId)));
       return names.map(n => `— ${n}`).join("\n");
     }
 
-    const ownersStr = await formatList(owners);
-    const leadersStr = await formatList(leaders);
-    const chiefAdminStr = chiefAdmins.length > 0 ? await getUserMention(chiefAdmins[0].userId) : "Отсутствует";
-    const srAdminStr = srAdmins.length > 0 ? await getUserMention(srAdmins[0].userId) : "Отсутствует";
-    const adminStr = admins.length > 0 ? await getUserMention(admins[0].userId) : "Отсутствует";
-    const srModStr = srMods.length > 0 ? await getUserMention(srMods[0].userId) : "Отсутствует";
-    const modStr = mods.length > 0 ? await getUserMention(mods[0].userId) : "Отсутствует";
+    const ownersStr = await formatLines(owners);
+    const leadersStr = await formatLines(leaders);
+    const chiefStr = chiefAdmins.length > 0 ? await getUserMention(chiefAdmins[0].userId) : "—";
+    const srAdminStr = srAdmins.length > 0 ? await getUserMention(srAdmins[0].userId) : "—";
+    const adminStr = admins.length > 0 ? await getUserMention(admins[0].userId) : "—";
+    const srModStr = srMods.length > 0 ? await getUserMention(srMods[0].userId) : "—";
+    const modStr = mods.length > 0 ? await getUserMention(mods[0].userId) : "—";
 
     const reply = 
 `🛡️ Модерация беседы
@@ -499,7 +508,7 @@ ${ownersStr}
 💎 Руководители беседы:
 ${leadersStr}
 ⚜️ Администраторы:
-├ Главный администратор — ${chiefAdminStr}
+├ Главный администратор — ${chiefStr}
 ├ Старший администратор — ${srAdminStr}
 └ Администратор — ${adminStr}
 🔨 Модераторы:
@@ -637,7 +646,6 @@ ${leadersStr}
     const targetMention = await getUserMention(targetId || fromId);
     const adminMention = await getUserMention(fromId);
 
-    // Удаляем сообщения пользователя из истории беседы
     const chatMsgs = memoryStore.messages.get(peerId) || [];
     const toDelete = chatMsgs.filter(m => (!targetId || m.fromId === targetId)).slice(-count);
     const cmIds = toDelete.map(m => m.cmId).filter(Boolean);
@@ -677,8 +685,8 @@ ${leadersStr}
     }
 
     const reason = parts.slice(1).filter(a => !a.startsWith("[id") && !a.startsWith("@") && !a.includes("vk.")).join(" ") || "Нарушение правил";
-
     const chatId = peerId > 2000000000 ? peerId - 2000000000 : peerId;
+
     await callVkApi("messages.removeChatUser", {
       chat_id: chatId,
       user_id: targetId
@@ -712,7 +720,7 @@ ${leadersStr}
 
     const targetId = getTargetUserId(message);
     if (!targetId) {
-      await sendReply(peerId, "❌ Укажите пользователя: /warn [пользователь] [срок: дни] [причина]", message);
+      await sendReply(peerId, "❌ Укажите пользователя: /warn [пользователь] [дни] [причина]", message);
       return;
     }
 
@@ -931,7 +939,7 @@ ${leadersStr}
 
     const targetId = getTargetUserId(message);
     if (!targetId) {
-      await sendReply(peerId, "❌ Укажите пользователя: /ban [пользователь] [срок: дни] [причина]", message);
+      await sendReply(peerId, "❌ Укажите пользователя: /ban [пользователь] [срок] [причина]", message);
       return;
     }
 
@@ -954,7 +962,6 @@ ${leadersStr}
     targetMember.banReason = reason;
     targetMember.bannedBy = fromId;
 
-    // Исключаем из беседы
     const chatId = peerId > 2000000000 ? peerId - 2000000000 : peerId;
     await callVkApi("messages.removeChatUser", {
       chat_id: chatId,
@@ -1034,7 +1041,7 @@ ${leadersStr}
   }
 }
 
-// Рендер страницы списка участников с никами (/nlist)
+// Рендер страницы участников с никами
 async function renderNlistPage(peerId, page, message = null, editCmId = null) {
   const pageSize = 10;
   const usersWithNicks = [];
@@ -1083,7 +1090,7 @@ ${itemsStr}`;
 }
 
 // ==========================================
-// ОБРАБОТКА CALLBACK КНОПОК (MESSAGE_EVENT)
+// ОБРАБОТЧИК CALLBACK-КНОПОК (MESSAGE_EVENT)
 // ==========================================
 async function handleMessageEvent(eventObj, env) {
   const peerId = eventObj.peer_id;
@@ -1098,7 +1105,6 @@ async function handleMessageEvent(eventObj, env) {
 
   const userMember = getMember(peerId, userId);
 
-  // Снятие мута через кнопку
   if (payload.act === "unmute") {
     if (userMember.role < 1) {
       await showEventSnackbar(eventId, peerId, userId, "❌ У вас недостаточно прав!");
@@ -1116,11 +1122,10 @@ async function handleMessageEvent(eventObj, env) {
     const kb = inlineKeyboard([[cbBtn("🧹 Очистить сообщения", { act: "clear", target: payload.target, count: 20, peer: peerId }, "secondary")]]);
 
     await editBotMessage(peerId, cmId, reply, kb);
-    await showEventSnackbar(eventId, peerId, userId, "Мут успешно снят!");
+    await showEventSnackbar(eventId, peerId, userId, "Мут снят!");
     return;
   }
 
-  // Очистка сообщений через кнопку
   if (payload.act === "clear") {
     if (userMember.role < 1) {
       await showEventSnackbar(eventId, peerId, userId, "❌ У вас недостаточно прав!");
@@ -1148,7 +1153,6 @@ async function handleMessageEvent(eventObj, env) {
     return;
   }
 
-  // Снятие варна через кнопку
   if (payload.act === "unwarn") {
     if (userMember.role < 1) {
       await showEventSnackbar(eventId, peerId, userId, "❌ У вас недостаточно прав!");
@@ -1166,7 +1170,6 @@ async function handleMessageEvent(eventObj, env) {
     return;
   }
 
-  // Бан через кнопку
   if (payload.act === "ban") {
     if (userMember.role < 2) {
       await showEventSnackbar(eventId, peerId, userId, "❌ Требуется роль Старший модератор!");
@@ -1194,7 +1197,6 @@ async function handleMessageEvent(eventObj, env) {
     return;
   }
 
-  // Разблокировка через кнопку
   if (payload.act === "unban") {
     if (userMember.role < 2) {
       await showEventSnackbar(eventId, peerId, userId, "❌ Требуется роль Старший модератор!");
@@ -1217,7 +1219,6 @@ async function handleMessageEvent(eventObj, env) {
     return;
   }
 
-  // Удаление ника через кнопку
   if (payload.act === "rnick") {
     if (userMember.role < 1) {
       await showEventSnackbar(eventId, peerId, userId, "❌ Недостаточно прав!");
@@ -1236,14 +1237,12 @@ async function handleMessageEvent(eventObj, env) {
     return;
   }
 
-  // Навигация по /nlist
   if (payload.act === "nlist") {
     await renderNlistPage(peerId, payload.page, null, cmId);
     await showEventSnackbar(eventId, peerId, userId, `Страница ${payload.page}`);
     return;
   }
 
-  // Меню карточки /get
   if (payload.act === "get_page") {
     const targetId = payload.target;
     const targetMember = getMember(peerId, targetId);
@@ -1340,7 +1339,6 @@ ${listStr}`;
     }
   }
 
-  // Меню списков /list
   if (payload.act === "list_tab") {
     if (payload.tab === "back") {
       const reply = `📋 Список наказаний в беседе\nВыберите тип наказания:`;
@@ -1448,7 +1446,6 @@ ${itemsStr}`;
   }
 }
 
-// Показ всплывающего уведомления по клику на callback кнопку
 async function showEventSnackbar(eventId, peerId, userId, text) {
   try {
     await callVkApi("messages.sendMessageEventAnswer", {
